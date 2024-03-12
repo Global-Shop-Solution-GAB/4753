@@ -1,0 +1,588 @@
+Program.Sub.Preflight.Start
+
+Program.Sub.Preflight.End
+
+Program.Sub.Main.Start
+F.Intrinsic.Control.Try
+
+	F.ODBC.Connection!con.OpenCompanyConnection
+	'check dirs first- the file to check isRunning must exist
+	F.Intrinsic.Control.CallSub(check_dir)
+	'For Online update: Check if the program is running.
+	F.Intrinsic.Control.CallSub(is_running)
+	'get file path and read in data
+	F.Intrinsic.Control.CallSub(Read_File)
+	'check dataTable for customer, if DNE create one
+	F.Intrinsic.Control.CallSub(Customer)
+	'create the file
+	F.Intrinsic.Control.CallSub(Create_File)
+	'upload the orders
+	F.Intrinsic.Control.CallSub(Upload_File)
+
+F.Intrinsic.Control.Catch
+	F.Intrinsic.Control.CallSub(CatchError, "Sub", V.Ambient.CurrentSubroutine, "Error", V.Ambient.ErrorNumber, "ErrorDescription", V.Ambient.ErrorDescription)
+F.Intrinsic.Control.EndTry
+Program.Sub.Main.End
+
+Program.Sub.Read_File.Start
+F.Intrinsic.Control.Try
+
+	V.Local.sFilePath.Declare(String)
+	V.Local.sRet.Declare(String)
+	V.Local.sTypes.Declare(String)
+	V.Local.sFields.Declare(String)
+	'open the file dialog box> this will have a  specific path for the web importer
+	
+	F.Intrinsic.UI.ShowOpenFileDialog("", "","",V.Local.sFilePath) 
+	
+	'read in the file to dataTable
+	F.Automation.MSExcel.ReadSpreadsheet(V.Local.sFilePath, V.Local.sRet)
+	V.Local.sTypes.Set("String*!*String*!*String*!*String*!*String*!*String*!*String*!*String*!*String*!*String*!*String*!*String*!*String*!*String*!*String*!*String*!*String*!*String*!*String*!*String*!*String*!*String*!*String*!*String*!*String*!*String*!*String*!*String*!*String*!*String*!*String*!*String*!*String*!*String*!*String*!*String*!*String*!*String")
+	V.Local.sFields.Set("order_id*!*date*!*status*!*order_total*!*shipping_total*!*tax_total*!*discount_total*!*payment_method*!*shipping_method*!*customer_id*!*billing_first_name*!*billing_last_name*!*billing_company*!*billing_email*!*billing_phone*!*billing_address_1*!*billing_address_2*!*billing_postcode*!*billing_city*!*billing_state*!*billing_country*!*shipping_first_name*!*shipping_last_name*!*shipping_address_1*!*shipping_address_2*!*shipping_postcode*!*shipping_city*!*shipping_state*!*shipping_country*!*shipping_company*!*shipping_Service*!*shipping_charge*!*customer_note*!*order_notes*!*item_sku*!*item_quantity*!*item_subtotal*!*coupon_items")
+	
+	F.Data.DataTable.CreateFromString("O", V.Local.sRet, V.Local.sFields , V.Local.sTypes,"*!*", "$!$", TRUE)
+	
+	'remove 1st row if it contains titles
+	F.Intrinsic.Control.If(V.DataTable.O(0).order_id!FieldValTrim, =, "order_id")
+		F.Data.DataTable.DeleteRow("O", 0)
+	F.Intrinsic.Control.EndIf
+	
+	'fill from dictionary the customers that match
+	F.Data.DataTable.AddColumn("O", "GSS", "String")	
+	F.Data.Dictionary.CreateFromSQL("dict", "con", "Select rTrim(WOO) as customer_id, rTrim(GSS) as GSS From GCG_4753_XCUST")
+	F.Data.Dictionary.SetDefaultReturn("dict", "")
+	F.Data.DataTable.FillFromDictionary("O", "dict", "customer_id", "GSS")
+	F.Data.Dictionary.Close("dict")
+
+F.Intrinsic.Control.Catch
+	F.Intrinsic.Control.CallSub(CatchError, "Sub", V.Ambient.CurrentSubroutine, "Error", V.Ambient.ErrorNumber, "ErrorDescription", V.Ambient.ErrorDescription)
+F.Intrinsic.Control.EndTry
+Program.Sub.Read_File.End
+
+Program.Sub.Customer.Start
+F.Intrinsic.Control.Try
+	V.Local.sRet.Declare(String)
+	V.Local.sCust.Declare(String)
+	V.Local.sTemp.Declare(String)
+	V.Local.sFile.Declare(String)
+	V.Local.sFilePath.Declare(String)
+	V.Local.sFilter.Declare(String)
+	V.Local.sData.Declare(String)
+	V.Local.ssql.Declare(String)
+	V.Local.iC.Declare(Long)
+	
+	'create view where customer = ''
+	F.Data.DataView.Create("O", "O_V", 22, "GSS = '' ", "")
+	'Get distinct order numbers requiring a customer to loop through
+	F.Data.DataView.ToDataTableDistinct("O", "O_V", "C", "order_id", True)
+	'check if we need to create customers
+	F.Intrinsic.Control.If(V.DataTable.C.RowCount, <, 1)
+		F.Data.DataView.Close("O", "O_V")
+		F.Data.DataTable.Close("C")
+		F.Intrinsic.Control.ExitSub
+	F.Intrinsic.Control.EndIf
+	
+	'loop- create customers
+	
+	F.Intrinsic.Control.For(V.Local.iC, 0, V.DataTable.C.RowCount--, 1)
+		'select to view O where order_id = order_id for loop
+		F.Intrinsic.String.Build("order_id = '{0}'", V.DataTable.C(V.Local.iC).order_id!FieldValTrim, V.Local.sFilter)
+		F.Data.DataView.Create("O", "O_C", 22, V.Local.sFilter, "")
+		
+		'get next customer number
+		F.ODBC.Connection!con.ExecuteAndReturn("Select Top 1 GSS From GCG_4753_XCUST Order By GSS desc", V.Local.sRet)
+		F.Intrinsic.Control.If(V.Local.sRet, =, "")
+			V.Local.sCust.Set("990000")
+		F.Intrinsic.Control.Else
+			F.Intrinsic.Math.Add(V.Local.sRet, 1, V.Local.sCust)
+		F.Intrinsic.Control.EndIf
+	
+		'Customer Number (6)
+		F.Intrinsic.String.RPad(V.Local.sCust, " ", 6, V.Local.sData)
+		'Bill To Information
+		'Customer Name (30)
+		F.Intrinsic.Control.If(V.DataView.O!O_C(0).billing_company!FieldvalTrim, <>, "")
+			F.Intrinsic.String.RPad(V.DataView.O!O_C(0).billing_company!FieldvalTrim, " ", 30, V.Local.sTemp)
+		F.Intrinsic.Control.Else
+			F.Intrinsic.String.Build("{0} {1}", V.DataView.O!O_C(0).billing_first_name!FieldvalTrim,V.DataView.O!O_C(0).billing_last_name!FieldvalTrim,V.Local.sTemp)
+			F.Intrinsic.String.RPad(V.Local.sTemp, " ", 30, V.Local.sTemp)
+		F.Intrinsic.Control.EndIf
+		F.Intrinsic.String.Build("{0}{1}", V.Local.sData, V.Local.sTemp, V.Local.sData)
+		'Address Line 1 (30)
+		F.Intrinsic.String.RPad(V.DataView.O!O_C(0).billing_address_1!FieldvalTrim, " ", 30, V.Local.sTemp)
+		F.Intrinsic.String.Build("{0}{1}", V.Local.sData, V.Local.sTemp, V.Local.sData)
+		'Address Line 2 (30)
+		F.Intrinsic.String.RPad(V.DataView.O!O_C(0).billing_address_2!FieldvalTrim, " ", 30, V.Local.sTemp)
+		F.Intrinsic.String.Build("{0}{1}", V.Local.sData, V.Local.sTemp, V.Local.sData)
+		'City (15)
+		F.Intrinsic.String.RPad(V.DataView.O!O_C(0).billing_city!FieldvalTrim, " ", 15, V.Local.sTemp)
+		F.Intrinsic.String.Build("{0}{1}", V.Local.sData, V.Local.sTemp, V.Local.sData)
+		' State (2)
+		F.Intrinsic.String.RPad(V.DataView.O!O_C(0).billing_state!FieldvalTrim, " ", 2, V.Local.sTemp)
+		F.Intrinsic.String.Build("{0}{1}", V.Local.sData, V.Local.sTemp, V.Local.sData)
+		' Zip (13)
+		F.Intrinsic.String.RPad(V.DataView.O!O_C(0).billing_postcode!FieldvalTrim, " ", 13, V.Local.sTemp)
+		F.Intrinsic.String.Build("{0}{1}", V.Local.sData, V.Local.sTemp, V.Local.sData)
+		' Country (12)
+		F.Intrinsic.String.RPad(V.DataView.O!O_C(0).billing_country!FieldvalTrim, " ",12, V.Local.sTemp)
+		F.Intrinsic.String.Build("{0}{1}", V.Local.sData, V.Local.sTemp, V.Local.sData)
+		'atten (30)
+		F.Intrinsic.String.RPad(V.Local.sData, " ", 150, V.Local.sData)
+		F.Intrinsic.String.Build("{0} {1}", V.DataView.O!O_C(0).billing_first_name!FieldvalTrim,V.DataView.O!O_C(0).billing_last_name!FieldvalTrim,V.Local.sTemp)
+		F.Intrinsic.String.RPad(V.Local.sTemp, " ",30, V.Local.sTemp)
+		F.Intrinsic.String.Build("{0}{1}", V.Local.sData, V.Local.sTemp, V.Local.sData)
+		'Un-used data up to the GL account
+		V.Local.sTemp.Set("")
+		F.Intrinsic.String.RPad(V.Local.sTemp," ",35,V.Local.sTemp)
+		F.Intrinsic.String.Build("{0}{1}", V.Local.sData, V.Local.sTemp, V.Local.sData)
+		'GLAccount
+		F.Intrinsic.String.RPad("400132"," ",15,V.Local.sTemp)
+		F.Intrinsic.String.Build("{0}{1}", V.Local.sData, V.Local.sTemp, V.Local.sData)
+		'Ship To Information
+		F.Intrinsic.String.RPad(V.Local.sData, " ", 492, V.Local.sData)
+		'Ship Name (30)
+		F.Intrinsic.String.Build("{0} {1}", V.DataView.O!O_C(0).shipping_first_name!FieldvalTrim,V.DataView.O!O_C(0).shipping_last_name!FieldvalTrim,V.Local.sTemp)
+		F.Intrinsic.String.RPad(V.Local.sTemp, " ", 30, V.Local.sTemp)
+		F.Intrinsic.String.Build("{0}{1}", V.Local.sData, V.Local.sTemp, V.Local.sData)
+		'Ship Address 1 (30)
+		F.Intrinsic.String.RPad(V.DataView.O!O_C(0).shipping_address_1!FieldvalTrim, " ",30, V.Local.sTemp)
+		F.Intrinsic.String.Build("{0}{1}", V.Local.sData, V.Local.sTemp, V.Local.sData)
+		'Ship Address 2 (30)
+		F.Intrinsic.String.RPad(V.DataView.O!O_C(0).shipping_address_2!FieldvalTrim, " ",30, V.Local.sTemp)
+		F.Intrinsic.String.Build("{0}{1}", V.Local.sData, V.Local.sTemp, V.Local.sData)
+		'Ship City (15)
+		F.Intrinsic.String.RPad(V.DataView.O!O_C(0).shipping_city!FieldvalTrim, " ",15, V.Local.sTemp)
+		F.Intrinsic.String.Build("{0}{1}", V.Local.sData, V.Local.sTemp, V.Local.sData)
+		'Ship State (2)
+		F.Intrinsic.String.RPad(V.DataView.O!O_C(0).shipping_state!FieldvalTrim, " ",2, V.Local.sTemp)
+		F.Intrinsic.String.Build("{0}{1}", V.Local.sData, V.Local.sTemp, V.Local.sData)
+		'Ship Zip (13)
+		F.Intrinsic.String.RPad(V.DataView.O!O_C(0).shipping_postcode!FieldvalTrim, " ",13, V.Local.sTemp)
+		F.Intrinsic.String.Build("{0}{1}", V.Local.sData, V.Local.sTemp, V.Local.sData)
+		'Ship Country (12)
+		F.Intrinsic.String.RPad(V.DataView.O!O_C(0).shipping_country!FieldvalTrim, " ",12, V.Local.sTemp)
+		F.Intrinsic.String.Build("{0}{1}", V.Local.sData, V.Local.sTemp, V.Local.sData)
+		'ship county(12)
+		F.Intrinsic.String.RPad(V.Local.sData, " ", 636, V.Local.sData)
+		'ship attn (30)
+		F.Intrinsic.String.Build("{0} {1}", V.DataView.O!O_C(0).shipping_first_name!FieldvalTrim,V.DataView.O!O_C(0).shipping_last_name!FieldvalTrim,V.Local.sTemp)
+		F.Intrinsic.String.RPad(V.Local.sTemp, " ",30, V.Local.sTemp)
+		F.Intrinsic.String.Build("{0}{1}", V.Local.sData, V.Local.sTemp, V.Local.sData)
+		
+		'save the new line
+		F.Intrinsic.String.Build("{0}{1}{2}", V.Local.sFile, V.Local.sData,V.Ambient.NewLine, V.Local.sFile)
+		'insert into database
+		
+		F.Intrinsic.String.Build("Insert Into GCG_4753_XCUST (GSS, WOO) Values ('{0}','{1}' )", V.Local.sCust, V.DataView.O!O_C(0).customer_id!FieldvalTrim, V.Local.ssql)
+		F.ODBC.Connection!con.Execute(V.Local.ssql)
+		'close the O_C view 
+		F.Data.DataView.Close("O", "O_C")
+	F.Intrinsic.Control.Next(V.Local.iC)
+		
+	'upload new customers	
+	F.Intrinsic.String.Build("{0}\CUSTOMER.TXT",V.Caller.FilesDir,V.Local.sFilePath)
+	F.Intrinsic.File.String2File(V.Local.sFilePath,V.Local.sFile)
+	F.Global.General.CallWrapperSync(6013, "3")
+	
+	'now we fill from dictionary again...
+	F.Data.Dictionary.CreateFromSQL("dict", "con", "Select rTrim(WOO)  as customer_id, rTrim(GSS) as GSS From GCG_4753_XCUST")
+	F.Data.Dictionary.SetDefaultReturn("dict", "")
+	F.Data.DataTable.FillFromDictionary("O", "dict", "customer_id", "GSS")
+	F.Data.Dictionary.Close("dict")
+	'close stuff
+	F.Data.DataView.Close("O", "O_V")
+	F.Data.DataTable.Close("C")
+
+F.Intrinsic.Control.Catch
+	F.Intrinsic.Control.CallSub(CatchError, "Sub", V.Ambient.CurrentSubroutine, "Error", V.Ambient.ErrorNumber, "ErrorDescription", V.Ambient.ErrorDescription)
+F.Intrinsic.Control.EndTry
+Program.Sub.Customer.End
+
+Program.Sub.Create_File.Start
+F.Intrinsic.Control.Try
+
+	V.Local.sTemp.Declare(String)
+	V.Local.sFilter.Declare(String)
+	V.Local.sLine.Declare(String)
+	V.Local.sFileName.Declare(String)
+	V.Local.sPath.Declare(String)
+	V.Local.sDisc1.Declare(String)
+	V.Local.sDisc2.Declare(String)
+	V.Local.sFull.Declare(String)
+	V.Local.sX.Declare(String)
+	V.Local.iC.Declare(Long)
+	V.Local.iP.Declare(Long)
+	V.Local.fQuote.Declare(Float)
+	V.Local.fQty.Declare(Float)
+	V.Local.fTemp.Declare(Float)
+	
+	'need to select to view, then distinct datatable based on order number
+	F.Data.DataView.Create("O", "O_V")
+	'Get distinct order numbers 
+	F.Data.DataView.ToDataTableDistinct("O", "O_V", "O_Distinct", "order_id", True)
+	F.Data.DataView.Close("O", "O_V")
+	
+	F.Intrinsic.Control.For(V.Local.iC, 0, V.DataTable.O_Distinct.RowCount--, 1)
+	
+		'select to view where order_id in O = order_id in O_Distinct
+		F.Intrinsic.String.Build("order_id = '{0}'", V.DataTable.O_Distinct(V.Local.iC).order_id!FieldValTrim, V.Local.sFilter)
+		
+		F.Data.DataView.Create("O", "O_V", 22, V.Local.sFilter, "")
+		F.Data.DataView.ToDataTable("O", "O_V", "U")
+	
+	''''''''another loop for this order adding up to lines at a time- if there ia a coupon we add the extra line...
+		F.Intrinsic.Control.For(V.Local.iP, 0, V.DataTable.U.RowCount--, 1)
+			'customer
+			F.Intrinsic.String.RPad(V.DataTable.U(v.Local.iP).GSS!Fieldvaltrim," ",7, V.Local.sTemp)
+			F.Intrinsic.String.Build("O{0}",V.Local.sTemp,V.Local.sLine)
+			F.Intrinsic.String.Build("O{0}",V.Local.sTemp,V.Local.sX)
+	'"""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""	
+			'order number
+			'F.Intrinsic.String.LPad(V.DataTable.U(v.Local.iP).order_id!Fieldvaltrim,"0",7, V.Local.sTemp)
+			V.Local.sTemp.Set("       ")
+			F.Intrinsic.String.Build("{0}{1}",V.local.sLine,V.Local.sTemp,V.local.sLine) 
+			F.Intrinsic.String.Build("{0}{1}",V.local.sX,V.Local.sTemp,V.local.sX) 
+			
+			'freight (8.2, 10)
+			F.Intrinsic.String.RPad(v.Local.sLine," ",15,v.Local.sLine)
+			F.Intrinsic.String.Split(V.DataTable.U(v.Local.iP).shipping_charge!Fieldvaltrim, ".", V.Local.sTemp)
+			F.Intrinsic.Control.If(V.Local.sTemp.UBound, >, 0)
+				F.Intrinsic.String.LPad(V.Local.sTemp(0), "0", 8, V.Local.sDisc1)
+				F.Intrinsic.String.RPad(V.Local.sTemp(1), "0", 2, V.Local.sDisc2)
+			F.Intrinsic.Control.Else
+				F.Intrinsic.String.LPad(V.Local.sTemp(0), "0", 8, V.Local.sDisc1)
+				F.Intrinsic.String.RPad(V.Local.sDisc1, "0", 10, V.Local.sDisc2)
+			F.Intrinsic.Control.EndIf
+			F.Intrinsic.String.Build("{0}{1}{2}",V.local.sLine,V.Local.sDisc1,V.Local.sDisc2,V.local.sLine)
+		
+			'order due
+			F.Intrinsic.Control.If(V.DataTable.U(v.Local.iP).date!Fieldvaltrim,<>,"")
+				F.Intrinsic.String.RPad(v.Local.sLine," ",27,v.Local.sLine)
+				V.Local.sTemp.Set(V.DataTable.U(v.Local.iP).date!Fieldvaltrim)
+				F.Intrinsic.String.Format(V.Local.sTemp,"YYYYMMDD",V.Local.sTemp)
+				F.Intrinsic.String.Build("{0}{1}",v.Local.sLine,V.Local.sTemp,v.Local.sLine)
+			F.Intrinsic.Control.EndIf
+		
+			'order date
+			F.Intrinsic.Control.If(V.DataTable.U(v.Local.iP).date!Fieldvaltrim,<>,"")
+				F.Intrinsic.String.RPad(v.Local.sLine," ",35,v.Local.sLine)
+				V.Local.sTemp.Set(V.DataTable.U(v.Local.iP).date!Fieldvaltrim)
+				F.Intrinsic.String.Format(V.Local.sTemp,"YYYYMMDD",V.Local.sTemp)
+				'create file name here
+				F.Intrinsic.String.Build("{0}_{1}.txt",V.DataTable.U(v.Local.iP).order_id!Fieldvaltrim, V.Local.sTemp,v.Local.sFileName)	
+				F.Intrinsic.String.Build("{0}{1}",v.Local.sLine,V.Local.sTemp,v.Local.sLine)
+			F.Intrinsic.Control.EndIf
+	'"""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""
+			'hard code User 4 to order number
+			F.Intrinsic.String.RPad(v.Local.sLine," ",133,v.Local.sLine)
+			F.Intrinsic.String.Build("{0}{1}",V.local.sLine,V.DataTable.U(v.Local.iP).order_id!Fieldvaltrim,V.local.sLine) 
+	
+			
+			'hard code User 5 to 'PREPAID'
+			F.Intrinsic.String.RPad(v.Local.sLine," ",163,v.Local.sLine)
+			F.Intrinsic.String.Build("{0}{1}",V.local.sLine,"PREPAID",V.local.sLine) 
+	
+			'carrier
+			F.Intrinsic.String.RPad(v.Local.sLine," ",253,v.Local.sLine)
+			F.Intrinsic.String.RPad(V.DataTable.U(v.Local.iP).shipping_company!Fieldvaltrim," ",6, V.Local.sTemp)
+			F.Intrinsic.String.Build("{0}{1}",V.local.sLine,V.Local.sTemp,V.local.sLine) 
+	
+			'order qty
+			F.Intrinsic.String.RPad(v.Local.sLine," ",705,v.Local.sLine)
+			F.Intrinsic.String.Split(V.DataTable.U(v.Local.iP).item_quantity!Fieldvaltrim,".",V.Local.sTemp) 
+			F.Intrinsic.Control.If(v.Local.sTemp.UBound,<,1) 
+				'no decimal 
+				F.Intrinsic.String.LPad(V.Local.sTemp(0).Trim,"0",9,V.Local.sTemp(0)) 
+				F.Intrinsic.String.RPad(V.Local.sTemp(0).Trim,"0",13,V.Local.sTemp(0)) 
+			F.Intrinsic.Control.Else 
+				F.Intrinsic.String.LPad(V.Local.sTemp(0).Trim,"0",9,V.Local.sTemp(0)) 
+				F.Intrinsic.String.RPad(V.Local.sTemp(1).Trim,"0",4,V.Local.sTemp(1))
+				F.Intrinsic.String.Join(V.Local.sTemp,"",v.Local.sTemp)
+			F.Intrinsic.Control.EndIf
+			F.Intrinsic.String.Build("{0}{1}",V.local.sLine,V.Local.sTemp,V.local.sLine) 
+			F.Intrinsic.String.RPad(v.Local.sX," ",705,v.Local.sX)
+			F.Intrinsic.String.Build("{0}{1}",V.local.sX,"0000000010000",V.local.sX)
+			
+			'part number
+			F.Intrinsic.String.RPad(v.Local.sLine," ",730,v.Local.sLine)
+			F.Intrinsic.String.RPad(V.DataTable.U(v.Local.iP).item_sku!Fieldvaltrim," ",20, V.Local.sTemp)
+			F.Intrinsic.String.Build("{0}{1}",V.local.sLine,V.Local.sTemp,V.local.sLine) 
+			F.Intrinsic.String.RPad(v.Local.sX," ",730,v.Local.sX)
+			F.Intrinsic.String.Build("{0}{1}",V.localf.sX,V.Local.sTemp,V.local.sX)
+	
+			'quoted price
+			F.Intrinsic.String.RPad(v.Local.sLine," ",770,v.Local.sLine)
+			V.Local.fQuote.Set(V.DataTable.U(v.Local.iP).item_subtotal!Fieldvaltrim)
+			V.Local.fQty.Set(V.DataTable.U(v.Local.iP).item_quantity!Fieldvaltrim)
+			F.Intrinsic.Math.Div(V.Local.fQuote, V.Local.fQty, V.Local.fTemp)
+			F.Intrinsic.String.Split(V.Local.fTemp, ".", V.Local.sTemp)
+			F.Intrinsic.Control.If(v.Local.sTemp.UBound,<,1)
+			'no decimal
+				F.Intrinsic.String.LPad(V.Local.sTemp(0).Trim,"0",10,V.Local.sTemp(0)) 
+				F.Intrinsic.String.RPad(V.Local.sTemp(0).Trim,"0",16,V.Local.sTemp(0)) 
+				F.Intrinsic.String.Build("{0}{1}",v.Local.sLine,V.Local.sTemp(0),v.Local.sLine)
+			F.Intrinsic.Control.Else
+				F.Intrinsic.String.LPad(V.Local.sTemp(0).Trim,"0",10,V.Local.sTemp(0)) 
+				F.Intrinsic.String.RPad(V.Local.sTemp(1).Trim,"0",6,V.Local.sTemp(1)) 
+				F.Intrinsic.String.Build("{0}{1}{2}",v.Local.sLine,V.Local.sTemp(0),V.Local.sTemp(1),v.Local.sLine)
+			F.Intrinsic.Control.EndIf
+			
+			'quoted price for discount this only applies for discounted line
+			F.Intrinsic.String.RPad(v.Local.sX," ",770,v.Local.sX)
+			V.Local.fQuote.Set(V.DataTable.U(v.Local.iP).discount_total!Fieldvaltrim)
+			V.Local.fQty.Set(V.DataTable.U(v.Local.iP).item_quantity!Fieldvaltrim)
+			F.Intrinsic.Math.Div(V.Local.fQuote, V.Local.fQty, V.Local.fTemp)
+			F.Intrinsic.String.Split(V.Local.fTemp, ".", V.Local.sTemp)
+			F.Intrinsic.Control.If(v.Local.sTemp.UBound,<,1)
+			'no decimal
+				F.Intrinsic.String.LPad(V.Local.sTemp(0).Trim,"0",10,V.Local.sTemp(0)) 
+				F.Intrinsic.String.RPad(V.Local.sTemp(0).Trim,"0",16,V.Local.sTemp(0)) 
+				F.Intrinsic.String.Build("{0}{1}",v.Local.sX,V.Local.sTemp(0),v.Local.sX)
+			F.Intrinsic.Control.Else
+				F.Intrinsic.String.LPad(V.Local.sTemp(0).Trim,"0",10,V.Local.sTemp(0)) 
+				F.Intrinsic.String.RPad(V.Local.sTemp(1).Trim,"0",6,V.Local.sTemp(1)) 
+				F.Intrinsic.String.Build("{0}{1}{2}",v.Local.sX,V.Local.sTemp(0),V.Local.sTemp(1),v.Local.sX)
+			F.Intrinsic.Control.EndIf
+			
+			'for discount line add 1 for negative qty values
+			F.Intrinsic.String.RPad(v.Local.sX," ",1352,v.Local.sX)
+			F.Intrinsic.String.Build("{0}{1}",v.Local.sX,"1",v.Local.sX)
+			
+			'ship address1
+			F.Intrinsic.String.RPad(v.Local.sLine," ",1558,v.Local.sLine)
+			F.Intrinsic.String.RPad(V.DataTable.U(v.Local.iP).shipping_address_1!Fieldvaltrim," ",40, V.Local.sTemp)
+			F.Intrinsic.String.Build("{0}{1}",V.local.sLine,V.Local.sTemp,V.local.sLine) 
+			'ship address2
+			F.Intrinsic.String.RPad(v.Local.sLine," ",1598,v.Local.sLine)
+			F.Intrinsic.String.RPad(V.DataTable.U(v.Local.iP).shipping_address_2!Fieldvaltrim," ",40, V.Local.sTemp)
+			F.Intrinsic.String.Build("{0}{1}",V.local.sLine,V.Local.sTemp,V.local.sLine) 
+			'ship city
+			F.Intrinsic.String.RPad(v.Local.sLine," ",1758,v.Local.sLine)
+			F.Intrinsic.String.RPad(V.DataTable.U(v.Local.iP).shipping_city!Fieldvaltrim," ",25, V.Local.sTemp)
+			F.Intrinsic.String.Build("{0}{1}",V.local.sLine,V.Local.sTemp,V.local.sLine) 
+			'ship state
+			F.Intrinsic.String.RPad(v.Local.sLine," ",1783,v.Local.sLine)
+			F.Intrinsic.String.RPad(V.DataTable.U(v.Local.iP).shipping_state!Fieldvaltrim," ",2, V.Local.sTemp)
+			F.Intrinsic.String.Build("{0}{1}",V.local.sLine,V.Local.sTemp,V.local.sLine) 
+			'ship zip
+			F.Intrinsic.String.RPad(v.Local.sLine," ",1785,v.Local.sLine)
+			F.Intrinsic.String.RPad(V.DataTable.U(v.Local.iP).shipping_postcode!Fieldvaltrim," ",13, V.Local.sTemp)
+			F.Intrinsic.String.Build("{0}{1}",V.local.sLine,V.Local.sTemp,V.local.sLine) 
+			'ship country
+			F.Intrinsic.String.RPad(v.Local.sLine," ",1798,v.Local.sLine)
+			F.Intrinsic.String.RPad(V.DataTable.U(v.Local.iP).shipping_country!Fieldvaltrim," ",25, V.Local.sTemp)
+			F.Intrinsic.String.Build("{0}{1}",V.local.sLine,V.Local.sTemp,V.local.sLine) 
+			'ship attention
+			F.Intrinsic.String.RPad(v.Local.sLine," ",1823,v.Local.sLine)
+			F.Intrinsic.String.Build("{0} {1}", V.DataTable.U(v.Local.iP).shipping_first_name!Fieldvaltrim, V.DataTable.U(v.Local.iP).shipping_last_name!Fieldvaltrim, V.Local.sTemp)
+			F.Intrinsic.String.Build("{0}{1}",V.local.sLine,V.Local.sTemp,V.local.sLine) 
+			'bill to name
+			F.Intrinsic.String.RPad(v.Local.sLine," ",1864,v.Local.sLine)
+			F.Intrinsic.Control.If(V.DataTable.U(v.Local.iP).billing_company!Fieldvaltrim, <>, "")
+				F.Intrinsic.String.RPad(V.DataTable.U(v.Local.iP).billing_company!Fieldvaltrim," ",40, V.Local.sTemp)
+			F.Intrinsic.Control.Else
+				F.Intrinsic.String.Build("{0} {1}", V.DataTable.U(v.Local.iP).billing_first_name!Fieldvaltrim, V.DataTable.U(v.Local.iP).billing_last_name!Fieldvaltrim, V.Local.sTemp)
+				F.Intrinsic.String.RPad(V.DataTable.U(v.Local.iP).shipping_country!Fieldvaltrim," ",40, V.Local.sTemp)
+			F.Intrinsic.Control.EndIf
+			F.Intrinsic.String.Build("{0}{1}",V.local.sLine,V.Local.sTemp,V.local.sLine) 
+			'bill address 1
+			F.Intrinsic.String.RPad(v.Local.sLine," ",1904,v.Local.sLine)
+			F.Intrinsic.String.RPad(V.DataTable.U(v.Local.iP).billing_address_1!Fieldvaltrim," ",40, V.Local.sTemp)
+			F.Intrinsic.String.Build("{0}{1}",V.local.sLine,V.Local.sTemp,V.local.sLine) 
+			'bill address 2
+			F.Intrinsic.String.RPad(v.Local.sLine," ",1944,v.Local.sLine)
+			F.Intrinsic.String.RPad(V.DataTable.U(v.Local.iP).billing_address_2!Fieldvaltrim," ",40, V.Local.sTemp)
+			F.Intrinsic.String.Build("{0}{1}",V.local.sLine,V.Local.sTemp,V.local.sLine) 
+			'bill city
+			F.Intrinsic.String.RPad(v.Local.sLine," ",2104,v.Local.sLine)
+			F.Intrinsic.String.RPad(V.DataTable.U(v.Local.iP).billing_city!Fieldvaltrim," ",25, V.Local.sTemp)
+			F.Intrinsic.String.Build("{0}{1}",V.local.sLine,V.Local.sTemp,V.local.sLine) 
+			'bill state
+			F.Intrinsic.String.RPad(v.Local.sLine," ",2129,v.Local.sLine)
+			F.Intrinsic.String.RPad(V.DataTable.U(v.Local.iP).billing_state!Fieldvaltrim," ",2, V.Local.sTemp)
+			F.Intrinsic.String.Build("{0}{1}",V.local.sLine,V.Local.sTemp,V.local.sLine) 
+			'bill zip
+			F.Intrinsic.String.RPad(v.Local.sLine," ",2131,v.Local.sLine)
+			F.Intrinsic.String.RPad(V.DataTable.U(v.Local.iP).billing_postcode!Fieldvaltrim," ",13, V.Local.sTemp)
+			F.Intrinsic.String.Build("{0}{1}",V.local.sLine,V.Local.sTemp,V.local.sLine) 
+			'bill country
+			F.Intrinsic.String.RPad(v.Local.sLine," ",2144,v.Local.sLine)
+			F.Intrinsic.String.RPad(V.DataTable.U(v.Local.iP).billing_country!Fieldvaltrim," ",25, V.Local.sTemp)
+			F.Intrinsic.String.Build("{0}{1}",V.local.sLine,V.Local.sTemp,V.local.sLine) 
+			'bill attention
+			F.Intrinsic.String.RPad(v.Local.sLine," ",2169,v.Local.sLine)
+			F.Intrinsic.String.Build("{0} {1}", V.DataTable.U(v.Local.iP).billing_first_name!Fieldvaltrim, V.DataTable.U(v.Local.iP).billing_last_name!Fieldvaltrim, V.Local.sTemp)
+			F.Intrinsic.String.RPad(V.DataTable.U(v.Local.iP).shipping_country!Fieldvaltrim," ",40, V.Local.sTemp)
+			F.Intrinsic.String.Build("{0}{1}",V.local.sLine,V.Local.sTemp,V.local.sLine) 
+			'contact email
+			F.Intrinsic.String.RPad(v.Local.sLine," ",2209,v.Local.sLine)
+			F.Intrinsic.String.RPad(V.DataTable.U(v.Local.iP).billing_email!Fieldvaltrim," ",100, V.Local.sTemp)
+			F.Intrinsic.String.Build("{0}{1}",V.local.sLine,V.Local.sTemp,V.local.sLine) 
+			'contact phone
+			F.Intrinsic.String.RPad(v.Local.sLine," ",2309,v.Local.sLine)
+			F.Intrinsic.String.RPad(V.DataTable.U(v.Local.iP).billing_phone!Fieldvaltrim," ",20, V.Local.sTemp)
+			F.Intrinsic.String.Build("{0}{1}",V.local.sLine,V.Local.sTemp,V.local.sLine) 
+			'customer note
+			F.Intrinsic.String.RPad(v.Local.sLine," ",2329,v.Local.sLine)
+			F.Intrinsic.String.RPad(V.DataTable.U(v.Local.iP).customer_note!Fieldvaltrim," ",300, V.Local.sTemp)
+			F.Intrinsic.String.Build("{0}{1}",V.local.sLine,V.Local.sTemp,V.local.sLine) 
+			'add the H
+			F.Intrinsic.String.RPad(v.Local.sLine," ",2629,v.Local.sLine)
+			F.Intrinsic.String.Build("{0}{1}",V.local.sLine,"HNNNNNN",V.local.sLine)
+			
+			'save the lines
+			F.Intrinsic.String.RPad(v.Local.sLine," ",4636,v.Local.sLine)
+			F.Intrinsic.String.RPad(v.Local.sX," ",4636,v.Local.sX)
+			F.Intrinsic.String.Build("{0}{1}{2}", V.Local.sFull , V.Local.sLine,V.Ambient.NewLine,V.Local.sFull) 
+			F.Intrinsic.Control.If(V.DataTable.U(v.Local.iP).coupon_items!Fieldvaltrim, <>, "")
+				F.Intrinsic.String.Build("{0}{1}{2}", V.Local.sFull , V.Local.sX,V.Ambient.NewLine,V.Local.sFull) 
+			F.Intrinsic.Control.EndIf
+			
+			V.Local.sLine.Set("")
+			V.Local.sX.Set("")
+		F.Intrinsic.Control.Next(V.Local.iP)
+	
+		'write to file for this order
+		F.Intrinsic.String.Build("{0}\Web_Orders\{1}",V.Caller.FilesDir,V.Local.sFileName,V.Local.sPath)
+		F.Intrinsic.File.String2File(V.Local.sPath,V.Local.sFull)
+		
+		F.Data.DataView.Close("O", "O_V")
+		F.Data.DataTable.Close("U")
+		V.Local.sFull.Set("")
+		
+	F.Intrinsic.Control.Next(V.Local.iC)
+
+F.Intrinsic.Control.Catch
+	F.Intrinsic.Control.CallSub(CatchError, "Sub", V.Ambient.CurrentSubroutine, "Error", V.Ambient.ErrorNumber, "ErrorDescription", V.Ambient.ErrorDescription)
+F.Intrinsic.Control.EndTry
+Program.Sub.Create_File.End
+
+Program.Sub.Upload_File.Start
+F.Intrinsic.Control.Try
+
+	V.Local.sParams.Declare(String) 
+	'Call ORDUPL to upload sales orders created, it will process all txt files created by this program.
+	'if ORDUPL encounters an error, it will move the file to the ERRORS folder designated in GLOBAL\FILES\GSSPARAM.txt or GSSPARAMccc.txt
+	
+	F.Intrinsic.String.Build("{0}!*!ORDUPL",V.Caller.CompanyCode,V.Local.sParams)
+	F.Global.General.CallWrapperSync(51,V.Local.sParams)
+
+F.Intrinsic.Control.Catch
+	F.Intrinsic.Control.CallSub(CatchError, "Sub", V.Ambient.CurrentSubroutine, "Error", V.Ambient.ErrorNumber, "ErrorDescription", V.Ambient.ErrorDescription)
+F.Intrinsic.Control.EndTry
+Program.Sub.Upload_File.End
+
+Program.Sub.Check_Dir.Start
+F.Intrinsic.Control.Try
+
+	V.Local.sDir.Declare(String)
+	V.Local.sSubDir.Declare(String)
+	V.Local.i.Declare(Long)
+	V.Local.bExists.Declare(Boolean)
+	
+	'Files\WEB_ORDERS 
+	F.Intrinsic.String.Build("{0}\WEB_ORDERS",v.Caller.FilesDir,v.Local.sDir) 
+	F.Intrinsic.File.DirExists(v.Local.sDir,v.Local.bExists) 
+	
+	F.Intrinsic.Control.If(v.Local.bExists,=,False) 
+		f.Intrinsic.File.CreateDir(v.Local.sDir) 
+	F.Intrinsic.Control.EndIf
+	
+	F.Intrinsic.String.Split("INV_Running*!*UPLOADED*!*WEB_ERRORS*!*IS_RUNNING","*!*",v.Local.sSubDir) 
+	
+	F.Intrinsic.Control.For(v.Local.i,0,v.Local.sSubDir.UBound,1) 
+	
+		F.Intrinsic.String.Build("{0}\{1}",v.Local.sDir,v.Local.sSubDir(v.Local.i).Trim,v.Local.sSubDir(v.Local.i)) 
+		f.Intrinsic.File.DirExists(v.Local.sSubDir(v.Local.i),v.Local.bExists) 
+		
+		F.Intrinsic.Control.If(v.Local.bExists,=,False) 
+			f.Intrinsic.File.CreateDir(v.Local.sSubDir(v.Local.i)) 
+		F.Intrinsic.Control.EndIf
+		
+	F.Intrinsic.Control.Next(v.Local.i) 
+
+F.Intrinsic.Control.Catch
+	F.Intrinsic.Control.CallSub(CatchError, "Sub", V.Ambient.CurrentSubroutine, "Error", V.Ambient.ErrorNumber, "ErrorDescription", V.Ambient.ErrorDescription)
+F.Intrinsic.Control.EndTry
+Program.Sub.Check_Dir.End
+
+Program.Sub.Is_Running.Start
+F.Intrinsic.Control.Try
+
+	V.Local.sFile.Declare(String)
+	V.Local.sCurrentPIDProcess.Declare(String)
+	V.Local.bExists.Declare(Boolean)
+	V.Local.iPID.Declare(Long)
+	
+	V.Local.iPID.Set(V.Ambient.PID)
+	
+	'check to see if program is already running. First check for file
+	F.Intrinsic.String.Build("{0}\\WEB_ORDERS\IS_RUNNING\Running_{1}.txt",V.Caller.FilesDir,"Y",V.Local.sFile)
+	F.Intrinsic.File.Exists(V.Local.sFile,V.Local.bExists)
+	
+	F.Intrinsic.Control.If(V.Local.bExists,=,False)
+		'Create Program Status file to let it know its running
+		F.Intrinsic.File.String2File(V.Local.sFile,V.Local.iPID.String)
+	F.Intrinsic.Control.Else
+	 'then the file exists: get the PID from the file to see if the process is still running
+		F.Intrinsic.File.File2String(V.Local.sFile, V.Local.sCurrentPIDProcess)
+		F.Intrinsic.Task.PIDRunning(V.Local.sCurrentPIDProcess,V.Local.bExists)
+		
+		F.Intrinsic.Control.If(V.Local.bExists)
+			'the the program is running- don't start new process
+			F.Intrinsic.Control.End	
+		F.Intrinsic.Control.Else
+			'the program has stopped, but did not delete the file. Delete the file and create a new file for current run
+			F.Intrinsic.File.DeleteFile(V.Local.sFile)
+			F.Intrinsic.File.String2File(V.Local.sFile,V.Local.iPID.String)
+		F.Intrinsic.Control.EndIf
+		
+	F.Intrinsic.Control.EndIf
+
+F.Intrinsic.Control.Catch
+	F.Intrinsic.Control.CallSub(CatchError, "Sub", V.Ambient.CurrentSubroutine, "Error", V.Ambient.ErrorNumber, "ErrorDescription", V.Ambient.ErrorDescription)
+F.Intrinsic.Control.EndTry
+Program.Sub.Is_Running.End
+
+Program.Sub.Unload.Start
+F.Intrinsic.Control.Try
+
+	V.Local.sFile.Declare(String)
+	
+	'path where file exists
+	F.Intrinsic.String.Build("{0}\\WEB_ORDERS\IS_RUNNING\Running_{1}.txt",V.Caller.FilesDir,"Y",V.Local.sFile)
+	
+	'delete file for the next run
+	F.Intrinsic.File.DeleteFile(V.Local.sFile)
+	'close connection
+	F.ODBC.Connection!con.Close
+	F.Intrinsic.Control.End
+
+F.Intrinsic.Control.Catch
+	F.Intrinsic.Control.CallSub(CatchError, "Sub", V.Ambient.CurrentSubroutine, "Error", V.Ambient.ErrorNumber, "ErrorDescription", V.Ambient.ErrorDescription)
+F.Intrinsic.Control.EndTry
+Program.Sub.Unload.End
+
+Program.Sub.CatchError.Start
+F.Intrinsic.Control.Try
+	V.Local.sErrorMessage.Declare(String)
+	
+	F.Intrinsic.String.Build("Program: GCG_4753_Customer_Web.g2u{0}{0}Sub: {1}{0}Error: {2}{0}Error Description: {3}",V.Ambient.NewLine,V.Args.Sub,V.Args.Error,V.Args.ErrorDescription,V.Local.sErrorMessage)
+	F.Intrinsic.UI.Msgbox(V.Local.sErrorMessage,"Unhandled Error Occurred")
+	
+	F.Intrinsic.Control.If(V.Args.Sub.UCase,!=,"UNLOAD")
+		F.Intrinsic.Control.CallSub(Unload)
+	F.Intrinsic.Control.Else
+		F.Intrinsic.Control.End
+	F.Intrinsic.Control.EndIf
+F.Intrinsic.Control.Catch
+	F.Intrinsic.UI.Msgbox("Fatal Error occurred in program GCG_4753_Customer_Web.g2u","Unhandled Error Occurred")
+	F.Intrinsic.Control.End
+F.Intrinsic.Control.EndTry	
+Program.Sub.CatchError.End
+
+Program.Sub.Comments.Start
+${$0$}$$}$DH1$}$10/12/2017 9:46:18 AM$}$False
+${$3$}$0$}$$}$0$}$-1$}$$}$12:00:00 AM$}$This project will read a file from a specific network path, create the web import file, then save the web import file in the designated file location. It will also create a new customer if the customer in the order does not exist. 
+
+Program.Sub.Comments.End
